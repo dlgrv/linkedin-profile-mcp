@@ -1,211 +1,133 @@
 # LinkedIn Profile MCP Editor
 
-An MCP-compatible tool that reads and edits LinkedIn profiles through browser automation. Designed for AI agents to maintain professional profiles programmatically — update headlines, rewrite summaries, add experience entries, manage projects, and sync portfolios without manual browser interaction.
+An MCP-compatible CLI that reads and edits LinkedIn profiles through browser automation. Designed for AI agents to maintain professional profiles programmatically — update headlines, rewrite summaries, add and edit experience/education/project entries — without manual browser interaction.
 
 ## Features
 
-- **25+ editable fields** across profile sections: intro, about, experience, education, skills, projects, achievements
-- **Persistent session** — one-time login, no repeated authentication
-- **Headless Chrome** — runs on GPU-less servers, VPS, or containers
-- **MCP integration** — callable as a tool from any MCP client (Claude Desktop, Cursor, Hermes Agent, custom apps)
-- **Field-level operations** — read or write individual fields with a single command
-- **Safe rollback** — test mode reads, writes, and restores to verify without permanent changes
+- **Label/aria-based field resolution (RU + EN locales)** — fields are matched by their visible labels or `aria-label` attributes with Russian and English variants, not by positional indexes
+- **Write verification** — every write is read back and compared; a mismatch aborts loudly instead of reporting a fake success
+- **Edit existing entries** — `edit-form` updates already-added positions and education entries (descriptions, end dates, …)
+- **Persistent session** — one-time manual login, no repeated authentication
+- **Headless by default** — no visible window unless you ask for one (`LINKEDIN_HEADLESS=false`)
+- **Safe test mode** — modifies the headline, verifies the change on the public profile, then restores the original
 
 ## Quick Start
 
 ### Prerequisites
 
 - Node.js 18+
-- Google Chrome or Chromium installed
+- Google Chrome installed
 - A LinkedIn account
 
 ### Installation
 
 ```bash
-# Clone the repo
-git clone https://github.com/YOUR_USERNAME/linkedin-profile-mcp.git
+git clone https://github.com/<your-username>/linkedin-profile-mcp.git
 cd linkedin-profile-mcp
-
-# Install dependencies
 npm install
 
-# One-time login (opens Chrome — complete the sign-in manually)
-npx linkedin-mcp --login
+# One-time login: opens Chrome, you sign in manually (password/2FA stay with you).
+# Detects your vanity slug and saves it to .env
+node login.js
 ```
 
 ### Usage
 
-**Run as MCP server (stdio):**
 ```bash
-linkedin-mcp
-```
-
-**Edit specific fields:**
-```bash
-node edit-profile.js set headline "Your New Headline"
-node edit-profile.js set about "Your updated summary text"
+# Read a field
 node edit-profile.js get headline
-```
 
-**Test mode** (modifies and reverts automatically):
-```bash
+# Write a field (verified by read-back)
+node edit-profile.js set headline "Backend Engineer | Python, Kafka"
+node edit-profile.js set about "Your summary text"
+
+# Safe roundtrip test: write headline + '.', check the public profile, revert
 node edit-profile.js test
-```
 
-**List all available fields:**
-```bash
+# List all fields per form
 node edit-profile.js list
 ```
 
-### Adding Experience or Education
+**Add experience / education / project:**
 
 ```bash
-# New experience entry
 node edit-profile.js add-exp \
-  --title "Software Engineer" \
-  --company "ACME Corp" \
-  --start-month "January" \
-  --start-year "2024" \
-  --description "Led development of..."
+  --title "Python Engineer" \
+  --company "CRBSIT" \
+  --location "Moscow" \
+  --start_month "Jul" --start_year "2026" \
+  --currently_working "true" \
+  --description "What you did there..."
 
-# New education entry
-node edit-profile.js add-edu \
-  --school "University of Example" \
-  --degree "BSc Computer Science" \
-  --start-year "2018" \
-  --end-year "2022"
+node edit-profile.js add-edu --school "University" --degree "BSc" --field_of_study "CS"
+node edit-profile.js add-project --project_name "My project" --description "..."
 ```
 
-## Integration with MCP Clients
-
-### Claude Desktop
-
-Add to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "linkedin-profile": {
-      "command": "npx",
-      "args": ["linkedin-mcp"]
-    }
-  }
-}
-```
-
-### Hermes Agent
-
-Register as an external tool:
+**Edit an existing entry** (get edit URLs from your profile's details pages, e.g. `/in/<vanity>/details/experience/`):
 
 ```bash
-hermes tools add linkedin-profile \
-  --command "npx linkedin-mcp" \
-  --stdio
+# Add a description and set the end date on an existing position
+node edit-profile.js edit-form "https://www.linkedin.com/in/<vanity>/details/experience/edit/forms/<id>/" \
+  --description "What you did there..." \
+  --end_month Jun --end_year 2026
 ```
 
-### Cursor
+Passing `--end_month/--end_year` automatically unchecks "I am currently working in this role" (fields only become editable then).
 
-Add to `.cursor/mcp.json`:
+**Helper scripts:**
+
+- `read-profile.js` — dump current profile state (headline, about, experience, education)
+- `debug-form.js [intro|about|add_exp|add_edu|add_project]` — dump every form control with labels/aria/values; use it to extend the field map
+
+### MCP integration
+
+The CLI is agent-friendly: register it with any MCP client as a shell tool, e.g. for Claude Desktop/Cursor:
 
 ```json
 {
   "mcpServers": {
     "linkedin-profile": {
-      "command": "npx",
-      "args": ["linkedin-mcp"]
+      "command": "node",
+      "args": ["/absolute/path/to/linkedin-profile-mcp/edit-profile.js", "list"]
     }
   }
 }
 ```
 
-## Architecture
-
-```
-┌──────────────┐     stdio/json      ┌─────────────────┐
-│   MCP Client  │ ◄─────────────────► │  linkedin-mcp   │
-│ (AI Agent)    │                     │  (MCP Server)    │
-└──────────────┘                     └────────┬────────┘
-                                              │
-                                    Playwright API
-                                              │
-                                              ▼
-                                     ┌─────────────────┐
-                                     │  Headless Chrome │
-                                     │ (Persistent Ssn) │
-                                     └─────────────────┘
-                                              │
-                                              ▼
-                                     ┌─────────────────┐
-                                     │ linkedin.com     │
-                                     │ Profile Pages   │
-                                     └─────────────────┘
-```
-
-The system works in two layers:
-1. **`linkedin-mcp`** (npm package) handles authentication, session persistence, and basic profile queries
-2. **`edit-profile.js`** (this repo) provides field-level read/write operations, a full field map, and convenience commands
-
-## Field Map
-
-See [docs/field-map.md](docs/field-map.md) for the complete list of 25+ editable fields across all profile sections.
+(Or simply let your agent call `node edit-profile.js <command>` from the shell.)
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LINKEDIN_PROFILE_DIR` | `~/.linkedin-mcp/profile` | Browser profile directory for persistent session |
-| `LINKEDIN_HEADLESS` | `false` | Run Chrome in headless mode |
-| `LINKEDIN_VANITY` | *(required)* | Your LinkedIn vanity URL slug |
+| `LINKEDIN_PROFILE_DIR` | `~/.linkedin-mcp/profile` | Browser profile directory for the persistent session |
+| `LINKEDIN_VANITY` | *(from `.env`)* | Your LinkedIn vanity URL slug; written by `login.js` |
+| `LINKEDIN_HEADLESS` | `true` | Set to `false` to watch Chrome work |
 
-## Deployment
+## Notes on the live LinkedIn DOM (as of Oct 2026)
 
-Planning to run this on a remote server, VPS, or container? See the **[Deployment Guide](docs/deploy.md)** for step-by-step instructions covering:
-
-- **Server prep** — installing Node.js, Chrome, and dependencies on a bare-metal box
-- **Authentication** — three approaches for logging in without a display (Xvfb+VNC, profile copy, SSH X11 forwarding)
-- **Running persistently** — systemd service, Docker, or foreground
-- **Session management** — monitoring expiry, re-authenticating, automated health checks
-- **Troubleshooting** — Chrome crashes, display errors, Cloudflare, container persistence
-
-The short version for a fresh server:
-
-```bash
-# 1. Prerequisites
-sudo apt install -y nodejs git xvfb
-npx patchright install chrome
-
-# 2. Setup
-git clone https://github.com/YOUR_USERNAME/linkedin-profile-mcp.git
-cd linkedin-profile-mcp && npm install
-
-# 3. Authenticate (pick one method — see docs/deploy.md for details)
-#    Recommended: copy profile from a machine with a display
-
-# 4. Run
-export LINKEDIN_VANITY="your-vanity"
-export LINKEDIN_HEADLESS=true
-npx linkedin-mcp
-```
-
-Full walkthroughs for every scenario at **[docs/deploy.md](docs/deploy.md)**.
+- Edit forms render as an overlay outside `<main>`/`<form>`/`[role=dialog]`, so the field scanner walks the whole document; labels/arias are unique page-wide.
+- Headline/About/descriptions are Tiptap/ProseMirror editors (`[contenteditable][role=textbox]`).
+- Native checkboxes are zero-height (custom toggle UI on top) — clicks are dispatched as native DOM events.
+- Playwright locators pierce open shadow roots while `querySelectorAll` does not, so fields located in `page.evaluate` are marked with `data-limcp-target` and re-located by that attribute.
+- **LinkedIn auto-replaces your headline when you add a new current position** — re-set the headline after `add-exp`.
+- Save button text is localized («Сохранить» / "Save"); both are matched.
+- Monthly selects take names (`Jan`…/`январь`…) or numbers `1–12`.
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| Chrome crashes on GPU-less server | Set `--disable-gpu --enable-unsafe-swiftshader` in launch args |
-| Session not persisting | Verify `LINKEDIN_PROFILE_DIR` points to a writable directory |
-| "Submit button disabled" | LinkedIn validates specific fields; ensure required fields are filled |
-| Login page shows Cloudflare | Login from a headed browser first, profile will persist for headless sessions |
+| `Field ... not usable` | Run `node debug-form.js <form>` and check the label variants in `FIELD_MAP` — LinkedIn may have changed the wording |
+| Save button not found | The form likely didn't open; re-run, or set `LINKEDIN_HEADLESS=false` and watch |
+| Login page shows Cloudflare | Login from a headed browser once (`node login.js`); the profile persists for headless runs |
+| Session expired | Re-run `node login.js` |
 
 ## Why This Exists
 
 LinkedIn has no official write API for profile data. The Partner Program grants write access but is locked behind approval and usage minimums. This project bridges that gap with browser automation — giving AI agents the ability to maintain professional profiles without manual editing.
 
-It's useful for:
-- **Portfolio automation** — sync projects from GitHub to LinkedIn
-- **Career management** — batch-update profiles across platforms
-- **AI agents** — let your assistant keep your professional presence current
+⚠️ Browser automation may violate LinkedIn's User Agreement; use at your own risk.
 
 ## License
 
